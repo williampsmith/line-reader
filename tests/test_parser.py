@@ -27,6 +27,27 @@ def ocr(text, x0, y0, x1=None, y1=None, confidence=0.95):
     )
 
 
+def test_rasterize_passes_thread_count_to_pdf2image(monkeypatch):
+    captured = {}
+
+    def fake_convert(pdf_bytes, dpi, thread_count=None):
+        captured["thread_count"] = thread_count
+        captured["dpi"] = dpi
+        return ["page-1", "page-2"]
+
+    fake_module = types.ModuleType("pdf2image")
+    fake_module.convert_from_bytes = fake_convert
+    monkeypatch.setitem(sys.modules, "pdf2image", fake_module)
+
+    from parser import rasterize
+
+    pages = rasterize(b"pdf-bytes", dpi=200, thread_count=4)
+
+    assert pages == ["page-1", "page-2"]
+    assert captured["thread_count"] == 4
+    assert captured["dpi"] == 200
+
+
 def test_ocr_pages_uses_current_ocrmac_text_from_image_api(monkeypatch):
     package = types.ModuleType("ocrmac")
     package.__path__ = []

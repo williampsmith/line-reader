@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, replace
 from typing import Iterable
@@ -12,6 +13,7 @@ from models import LineType, ParsedLine, Scene, Script
 DPI = 200
 MIN_OCR_CONFIDENCE = 0.5
 HEADER_FOOTER_MARGIN_RATIO = 0.05
+DEFAULT_RASTERIZE_THREADS = max(2, min((os.cpu_count() or 2), 6))
 
 LEFT_MARGIN_MAX_IN = 1.35
 CHARACTER_X_MIN_IN = 3.0
@@ -55,12 +57,17 @@ class ParsingError(ValueError):
     """Raised when OCR output cannot produce a usable script."""
 
 
-def rasterize(pdf_bytes: bytes, dpi: int = DPI):
-    """Rasterize PDF bytes into PIL images with pdf2image."""
+def rasterize(
+    pdf_bytes: bytes,
+    dpi: int = DPI,
+    thread_count: int | None = None,
+):
+    """Rasterize PDF bytes into PIL images with pdf2image, using Poppler threads."""
 
     from pdf2image import convert_from_bytes
 
-    return convert_from_bytes(pdf_bytes, dpi=dpi)
+    threads = thread_count if thread_count is not None else DEFAULT_RASTERIZE_THREADS
+    return convert_from_bytes(pdf_bytes, dpi=dpi, thread_count=threads)
 
 
 def ocr_pages(images: Iterable[object]) -> list[list[OCRLine]]:

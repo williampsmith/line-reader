@@ -256,3 +256,109 @@ def test_invalid_gemini_json_raises_parse_error():
 
     with pytest.raises(GeminiParseError, match="valid JSON"):
         parser.parse([FakeImage()], [[]])
+
+
+def test_parse_page_with_use_image_false_skips_image_attempt():
+    response = {
+        "lines": [
+            {
+                "type": "dialogue",
+                "text": "Hello.",
+                "page": 1,
+                "bbox": [0.0, 0.0, 0.0, 0.0],
+                "character": "SARAH",
+            }
+        ]
+    }
+    client = FakeClient(json.dumps(response))
+    parser = GeminiScriptParser(api_key="test-key", client=client)
+
+    parser.parse_page(FakeImage(), [ocr_line("SARAH")], 1, use_image=False)
+
+    assert len(client.models.calls) == 1
+    contents = client.models.calls[0]["contents"]
+    assert not any(getattr(part, "inline_data", None) is not None for part in contents)
+    assert any(isinstance(part, str) and "OCR hints" in part for part in contents)
+
+
+def test_parse_pages_in_parallel_returns_results_in_page_order():
+    import threading
+    import time
+
+    from ai_parser import parse_pages_in_parallel
+    from models import LineType, ParsedLine, Script
+
+    parse_lock = threading.Lock()
+    in_flight = {"now": 0, "max": 0}
+
+    def fake_parse(parser, image, page_ocr, page_number):
+        with parse_lock:
+            in_flight["now"] += 1
+            in_flight["max"] = max(in_flight["max"], in_flight["now"])
+        time.sleep(0.05)
+        with parse_lock:
+            in_flight["now"] -= 1
+        return Script(
+            lines=[
+                ParsedLine(
+                    type=LineType.SCENE_HEADING,
+                    text=f"PAGE {page_number}",
+                    page=page_number,
+                    bbox=(0.0, 0.0, 0.0, 0.0),
+                )
+            ],
+            scenes=[],
+            characters=set(),
+        )
+
+    progress_events: list[tuple[int, int]] = []
+    parser = object()
+    images = [FakeImage() for _ in range(4)]
+    ocr_per_page = [[ocr_line(f"hint {idx}", page=idx + 1)] for idx in range(4)]
+
+    def on_progress(completed: int, total: int) -> None:
+        progress_events.append((completed, total))
+
+    page_scripts = parse_pages_in_parallel(
+        parser,
+        images,
+        ocr_per_page,
+        max_workers=4,
+        parser_callable=fake_parse,
+        on_progress=on_progress,
+    )
+
+    assert [page.lines[0].text for page in page_scripts] == [
+        "PAGE 1",
+        "PAGE 2",
+        "PAGE 3",
+        "PAGE 4",
+    ]
+    assert in_flight["max"] >= 2
+    assert progress_events[-1] == (4, 4)
+    assert progress_events == sorted(progress_events)
+
+
+def test_parse_pages_in_parallel_propagates_errors():
+    from ai_parser import parse_pages_in_parallel
+
+    def fake_parse(parser, image, page_ocr, page_number):
+        if page_number == 2:
+            raise GeminiParseError("page 2 boom")
+        from models import LineType, ParsedLine, Script
+
+        return Script(
+            lines=[ParsedLine(LineType.ACTION, "ok", page_number, (0, 0, 1, 1))],
+            scenes=[],
+            characters=set(),
+        )
+
+    with pytest.raises(GeminiParseError, match="page 2 boom"):
+        parse_pages_in_parallel(
+            object(),
+            [FakeImage(), FakeImage(), FakeImage()],
+            [[], [], []],
+            max_workers=3,
+            parser_callable=fake_parse,
+            on_progress=lambda completed, total: None,
+        )

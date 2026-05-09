@@ -39,6 +39,7 @@ class ParserConfig:
     gemini_api_key_path: Path = DEFAULT_GEMINI_API_KEY_PATH
     gemini_model: str = "gemini-2.5-flash-lite"
     gemini_timeout_ms: int = 45_000
+    gemini_use_image: bool = True
     fallback_to_local: bool = False
 
 
@@ -87,6 +88,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             ),
             gemini_model=str(parser_raw.get("gemini_model", "gemini-2.5-flash-lite")),
             gemini_timeout_ms=int(parser_raw.get("gemini_timeout_ms", 45_000)),
+            gemini_use_image=bool(parser_raw.get("gemini_use_image", True)),
             fallback_to_local=bool(parser_raw.get("fallback_to_local", False)),
         ),
         ui=UiConfig(

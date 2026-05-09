@@ -54,6 +54,7 @@ def test_load_config_uses_defaults_when_file_is_missing(tmp_path, monkeypatch):
     ).expanduser()
     assert config.parser.gemini_model == "gemini-2.5-flash-lite"
     assert config.parser.gemini_timeout_ms == 45000
+    assert config.parser.gemini_use_image is True
     assert config.parser.fallback_to_local is False
     assert config.ui.port == 7860
     assert config.ui.auto_open_browser is True

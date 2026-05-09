@@ -5,9 +5,10 @@ from __future__ import annotations
 import io
 import importlib
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, Sequence
 
 from pydantic import BaseModel, Field, ValidationError
 from PIL import Image
@@ -16,6 +17,7 @@ from models import LineType, ParsedLine, Script
 from parser import OCRLine, _build_script, _normalize_character_name
 
 MAX_GEMINI_IMAGE_EDGE_PX = 1400
+DEFAULT_GEMINI_MAX_WORKERS = 4
 
 
 class GeminiParseError(RuntimeError):
@@ -91,9 +93,24 @@ class GeminiScriptParser:
         image: object,
         ocr_lines: list[OCRLine],
         page_number: int,
+        *,
+        use_image: bool = True,
     ) -> Script:
         client = self._client()
         config = self._generate_config()
+        if not use_image:
+            try:
+                response = client.models.generate_content(
+                    model=self.model,
+                    contents=self._ocr_only_contents([ocr_lines], page_number),
+                    config=config,
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise GeminiParseError(
+                    f"Gemini OCR-only request failed on page {page_number}: {exc}"
+                ) from exc
+            return self._script_from_response(response.text)
+
         try:
             response = client.models.generate_content(
                 model=self.model,
@@ -185,6 +202,60 @@ def combine_page_scripts(scripts: Iterable[Script]) -> Script:
     for script in scripts:
         lines.extend(script.lines)
     return _build_script(lines)
+
+
+ProgressCallback = Callable[[int, int], None]
+PageParserCallable = Callable[[Any, Any, list[OCRLine], int], Script]
+
+
+def parse_pages_in_parallel(
+    parser: Any,
+    images: Sequence[Any],
+    ocr_per_page: Sequence[list[OCRLine]],
+    *,
+    max_workers: int = DEFAULT_GEMINI_MAX_WORKERS,
+    parser_callable: PageParserCallable | None = None,
+    on_progress: ProgressCallback | None = None,
+) -> list[Script]:
+    """Parse pages concurrently while preserving original page ordering.
+
+    The optional ``parser_callable`` lets tests inject a fake page parser. It
+    receives ``(parser, image, page_ocr, page_number)``. When omitted, falls
+    back to ``parser.parse_page(image, page_ocr, page_number)``.
+    """
+
+    if not images:
+        if on_progress is not None:
+            on_progress(0, 0)
+        return []
+
+    total = len(images)
+    if parser_callable is None:
+        def parser_callable(parser_obj, image, page_ocr, page_number):
+            return parser_obj.parse_page(image, page_ocr, page_number)
+
+    results: list[Script | None] = [None] * total
+    completed = 0
+    workers = max(1, min(max_workers, total))
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_index = {}
+        for index, image in enumerate(images):
+            page_ocr = ocr_per_page[index] if index < len(ocr_per_page) else []
+            future = executor.submit(parser_callable, parser, image, page_ocr, index + 1)
+            future_to_index[future] = index
+
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            results[index] = future.result()
+            completed += 1
+            if on_progress is not None:
+                on_progress(completed, total)
+
+    if any(result is None for result in results):
+        raise GeminiParseError("Gemini parse returned no result for one or more pages.")
+
+    return [result for result in results if result is not None]
 
 
 def _to_parsed_line(line: GeminiParsedLine) -> ParsedLine:
