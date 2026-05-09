@@ -1,0 +1,11 @@
+gradio
+pdf2image
+ocrmac
+google-cloud-texttospeech
+google-genai
+pydantic
+silero-vad
+sounddevice
+numpy
+pillow
+pytest
