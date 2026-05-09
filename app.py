@@ -49,6 +49,8 @@ TAB_LABELS = {
     "practice": "Rehearse",
 }
 
+MAX_CAST_ROWS = 20
+
 
 APP_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap');
@@ -763,6 +765,64 @@ label, .label-wrap, .gradio-container label, .gradio-container .gr-label {
   font-weight: 450 !important;
 }
 
+.gradio-container input[type="radio"] {
+  accent-color: var(--accent) !important;
+  transform: scale(1.12);
+}
+
+.gradio-container input[type="radio"]:checked {
+  accent-color: var(--accent) !important;
+}
+
+.gradio-container label:has(input[type="radio"]:checked) {
+  background: var(--accent-soft) !important;
+  border-color: var(--accent) !important;
+  color: var(--ink-primary) !important;
+  font-weight: 600 !important;
+}
+
+.voice-table-head {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.8fr) minmax(260px, 1.2fr);
+  gap: 16px;
+  padding: 12px 0 8px;
+  border-bottom: 1px solid var(--line-soft);
+  margin-top: 16px;
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+
+.voice-row {
+  display: grid !important;
+  grid-template-columns: minmax(160px, 0.8fr) minmax(260px, 1.2fr);
+  gap: 16px !important;
+  align-items: center !important;
+  padding: 10px 0 !important;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.voice-row-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.voice-row-label strong {
+  font-size: 0.96rem;
+  color: var(--ink-primary);
+}
+
+.voice-row-label span {
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-tertiary);
+}
+
 .gradio-container .gr-slider input[type="range"] {
   accent-color: var(--accent) !important;
 }
@@ -1420,6 +1480,53 @@ def load_voice_for_character(state: PracticeUiState, character: str):
     return gr.update(value=state.voice_overrides.get(character))
 
 
+def update_cast_voice_rows(state: PracticeUiState, user_character: str):
+    state = _ensure_state(state)
+    if state.script is None or not user_character:
+        state.voice_overrides = {}
+        return (state, *_empty_cast_row_updates(), _voice_assignment_status(state, user_character))
+
+    defaults = default_voice_assignment(sorted(state.script.characters), user_character)
+    new_overrides: dict[str, str] = {}
+    for character, default_voice in defaults.voice_for_character.items():
+        new_overrides[character] = state.voice_overrides.get(character) or default_voice
+    state.voice_overrides = new_overrides
+
+    row_updates: list[Any] = []
+    characters = sorted(new_overrides)
+    for index in range(MAX_CAST_ROWS):
+        if index < len(characters):
+            character = characters[index]
+            voice_id = new_overrides[character]
+            row_updates.extend(
+                [
+                    gr.update(visible=True),
+                    _voice_row_label(character),
+                    gr.update(value=voice_id),
+                    character,
+                ]
+            )
+        else:
+            row_updates.extend([gr.update(visible=False), "", gr.update(value=None), ""])
+    return (state, *row_updates, _voice_assignment_status(state, user_character))
+
+
+def _empty_cast_row_updates() -> list[Any]:
+    row_updates: list[Any] = []
+    for _ in range(MAX_CAST_ROWS):
+        row_updates.extend([gr.update(visible=False), "", gr.update(value=None), ""])
+    return row_updates
+
+
+def _voice_row_label(character: str) -> str:
+    return (
+        '<div class="voice-row-label">'
+        f"<strong>{html.escape(character)}</strong>"
+        "<span>AI character</span>"
+        "</div>"
+    )
+
+
 def _voice_assignment_status(
     state: PracticeUiState,
     user_character: str | None = None,
@@ -2021,16 +2128,24 @@ def build_app():
                         user_character = gr.Radio(
                             label="You are playing",
                         )
-                        voice_character = gr.Dropdown(
-                            label="Assign voice for",
-                            choices=[],
-                            interactive=True,
+                        gr.HTML(
+                            '<div class="voice-table-head">'
+                            "<span>Character</span><span>Voice</span>"
+                            "</div>"
                         )
-                        voice_choice = gr.Dropdown(
-                            label="Voice",
-                            choices=CHIRP_3_HD_VOICES,
-                            interactive=True,
-                        )
+                        cast_voice_rows = []
+                        for _ in range(MAX_CAST_ROWS):
+                            with gr.Row(visible=False, elem_classes="voice-row") as voice_row:
+                                character_label = gr.HTML()
+                                voice_dropdown = gr.Dropdown(
+                                    choices=CHIRP_3_HD_VOICES,
+                                    label=" ",
+                                    show_label=False,
+                                )
+                                character_holder = gr.Textbox(visible=False)
+                            cast_voice_rows.append(
+                                (voice_row, character_label, voice_dropdown, character_holder)
+                            )
                         voice_assignment_status = gr.HTML(
                             _voice_assignment_status(_state(), None)
                         )
@@ -2188,26 +2303,25 @@ def build_app():
             outputs=[user_character, casting_status, nav_target],
             queue=False,
         )
+        cast_voice_row_outputs = []
+        for row_group, character_label, voice_dropdown, character_holder in cast_voice_rows:
+            cast_voice_row_outputs.extend(
+                [row_group, character_label, voice_dropdown, character_holder]
+            )
         user_character.change(
-            update_default_voices,
+            update_cast_voice_rows,
             inputs=[state, user_character],
-            outputs=[state, voice_character, voice_choice, voice_assignment_status],
+            outputs=[state, *cast_voice_row_outputs, voice_assignment_status],
             queue=False,
         )
-        voice_character.change(
-            load_voice_for_character,
-            inputs=[state, voice_character],
-            outputs=[voice_choice],
-            queue=False,
-            show_progress="hidden",
-        )
-        voice_choice.change(
-            update_voice_override,
-            inputs=[state, user_character, voice_character, voice_choice],
-            outputs=[state, voice_assignment_status],
-            queue=False,
-            show_progress="hidden",
-        )
+        for _row_group, _character_label, row_voice_dropdown, row_character_holder in cast_voice_rows:
+            row_voice_dropdown.change(
+                update_voice_override,
+                inputs=[state, user_character, row_character_holder, row_voice_dropdown],
+                outputs=[state, voice_assignment_status],
+                queue=False,
+                show_progress="hidden",
+            )
         preview_button.click(
             preview_voice,
             inputs=[state, preview_voice_id],
