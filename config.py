@@ -13,6 +13,9 @@ DEFAULT_CREDENTIALS_PATH = Path("~/.config/audition-app/gcp-key.json").expanduse
 DEFAULT_GEMINI_API_KEY_PATH = Path(
     "~/.config/audition-app/gemini-api-key.txt"
 ).expanduser()
+DEFAULT_ELEVENLABS_API_KEY_PATH = Path(
+    "~/.config/audition-app/elevenlabs-api-key.txt"
+).expanduser()
 
 
 @dataclass(frozen=True)
@@ -44,10 +47,18 @@ class ParserConfig:
 
 
 @dataclass(frozen=True)
+class TtsConfig:
+    provider: str = "google"
+    elevenlabs_api_key_path: Path = DEFAULT_ELEVENLABS_API_KEY_PATH
+    elevenlabs_model: str = "eleven_multilingual_v2"
+
+
+@dataclass(frozen=True)
 class AppConfig:
     gcp: GcpConfig = field(default_factory=GcpConfig)
     vad: VadConfig = field(default_factory=VadConfig)
     parser: ParserConfig = field(default_factory=ParserConfig)
+    tts: TtsConfig = field(default_factory=TtsConfig)
     ui: UiConfig = field(default_factory=UiConfig)
 
 
@@ -68,6 +79,7 @@ def load_config(path: str | Path | None = None) -> AppConfig:
     gcp_raw = raw.get("gcp", {})
     vad_raw = raw.get("vad", {})
     parser_raw = raw.get("parser", {})
+    tts_raw = raw.get("tts", {})
     ui_raw = raw.get("ui", {})
 
     return AppConfig(
@@ -90,6 +102,13 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             gemini_timeout_ms=int(parser_raw.get("gemini_timeout_ms", 45_000)),
             gemini_use_image=bool(parser_raw.get("gemini_use_image", True)),
             fallback_to_local=bool(parser_raw.get("fallback_to_local", False)),
+        ),
+        tts=TtsConfig(
+            provider=str(tts_raw.get("provider", "google")),
+            elevenlabs_api_key_path=_expand_path(
+                tts_raw.get("elevenlabs_api_key_path", DEFAULT_ELEVENLABS_API_KEY_PATH)
+            ),
+            elevenlabs_model=str(tts_raw.get("elevenlabs_model", "eleven_multilingual_v2")),
         ),
         ui=UiConfig(
             port=int(ui_raw.get("port", 7860)),

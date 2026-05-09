@@ -11,6 +11,7 @@ PDF rasterization, Apple Vision OCR, and microphone audio are processed locally 
 - Homebrew `poppler`
 - Gemini Developer API key for AI script parsing
 - Google Cloud Text-to-Speech service account key
+- Optional ElevenLabs API key for ElevenLabs voices
 - Microphone permission for the terminal or Platypus wrapper on first practice session
 
 ## Gemini Parser Setup
@@ -41,6 +42,21 @@ For very infrequent personal use, Gemini's Developer API free tier should usuall
 mkdir -p ~/.config/audition-app
 cp /path/to/key.json ~/.config/audition-app/gcp-key.json
 ```
+
+## ElevenLabs Setup (Optional)
+
+The Cast screen can switch between Google Chirp and ElevenLabs voices. Google remains the default provider. To enable ElevenLabs:
+
+1. Create an ElevenLabs API key from your ElevenLabs account.
+2. Save it as plain text:
+
+```bash
+mkdir -p ~/.config/audition-app
+printf '%s' 'YOUR_ELEVENLABS_API_KEY' > ~/.config/audition-app/elevenlabs-api-key.txt
+chmod 600 ~/.config/audition-app/elevenlabs-api-key.txt
+```
+
+If you choose ElevenLabs in the Cast screen without this key, preview and rehearsal synthesis will show an inline credentials error.
 
 ## Install
 
@@ -73,6 +89,11 @@ gemini_api_key_path = "~/.config/audition-app/gemini-api-key.txt"
 gemini_model = "gemini-2.5-flash-lite"
 gemini_timeout_ms = 45000
 fallback_to_local = false
+
+[tts]
+provider = "google"
+elevenlabs_api_key_path = "~/.config/audition-app/elevenlabs-api-key.txt"
+elevenlabs_model = "eleven_multilingual_v2"
 
 [ui]
 port = 7860

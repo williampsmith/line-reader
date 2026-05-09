@@ -100,7 +100,7 @@ def test_update_default_voices_seeds_overrides_for_other_characters():
     state = _state()
     state.script = script_with_characters()
 
-    state, character_update, voice_update, status = update_default_voices(state, "JOHN")
+    state, character_update, voice_update, preview_update, status = update_default_voices(state, "JOHN")
 
     assert "SARAH" in state.voice_overrides
     assert state.voice_overrides["SARAH"]
@@ -108,6 +108,7 @@ def test_update_default_voices_seeds_overrides_for_other_characters():
     assert character_update["choices"] == ["SARAH"]
     assert character_update["value"] == "SARAH"
     assert voice_update["value"] == state.voice_overrides["SARAH"]
+    assert preview_update["value"] == state.voice_overrides["SARAH"]
     assert "SARAH" in status
 
 
@@ -116,7 +117,7 @@ def test_update_voice_override_updates_summary():
 
     state = _state()
     state.script = script_with_characters()
-    state, _, _, _ = update_default_voices(state, "JOHN")
+    state, _, _, _, _ = update_default_voices(state, "JOHN")
 
     state, summary = update_voice_override(
         state,
@@ -128,6 +129,34 @@ def test_update_voice_override_updates_summary():
     assert state.voice_overrides["SARAH"] == "en-US-Chirp3-HD-Kore"
     assert "SARAH" in summary
     assert "en-US-Chirp3-HD-Kore" in summary
+
+
+def test_update_tts_provider_switches_voice_choices():
+    from app import update_default_voices, update_tts_provider
+
+    state = _state()
+    state.script = script_with_characters()
+    state, _, _, _, _ = update_default_voices(state, "JOHN")
+
+    outputs = update_tts_provider(
+        state,
+        "ElevenLabs",
+        "JOHN",
+    )
+    state = outputs[0]
+    first_row_visibility = outputs[1]
+    first_row_label = outputs[2]
+    first_row_voice = outputs[3]
+    preview_update = outputs[-2]
+    summary = outputs[-1]
+
+    assert state.tts_provider == "elevenlabs"
+    assert state.tts_client is None
+    assert first_row_visibility["visible"] is True
+    assert "SARAH" in first_row_label
+    assert first_row_voice["choices"][0][0] == "Rachel"
+    assert preview_update["choices"][0][0] == "Rachel"
+    assert "SARAH" in summary
 
 
 def test_process_pdf_streams_status_and_selects_review_tab(monkeypatch, tmp_path):
@@ -265,6 +294,7 @@ def test_start_practice_selects_practice_tab():
         voice_for_character={"SARAH": "voice-sarah"},
     )
     state.tts_client = FakeTTS()
+    state.tts_client_provider = "google"
 
     outputs = start_practice(state, "1. INT. KITCHEN - DAY (p.1) - JOHN, SARAH", 800, 0.9)
 

@@ -4,6 +4,7 @@ ocrmac
 google-cloud-texttospeech
 google-genai
 pydantic
+elevenlabs
 silero-vad
 sounddevice
 numpy

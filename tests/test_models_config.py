@@ -56,6 +56,11 @@ def test_load_config_uses_defaults_when_file_is_missing(tmp_path, monkeypatch):
     assert config.parser.gemini_timeout_ms == 45000
     assert config.parser.gemini_use_image is True
     assert config.parser.fallback_to_local is False
+    assert config.tts.provider == "google"
+    assert config.tts.elevenlabs_api_key_path == Path(
+        "~/.config/audition-app/elevenlabs-api-key.txt"
+    ).expanduser()
+    assert config.tts.elevenlabs_model == "eleven_multilingual_v2"
     assert config.ui.port == 7860
     assert config.ui.auto_open_browser is True
     assert DEFAULT_CONFIG_PATH.name == "config.toml"
@@ -78,6 +83,11 @@ gemini_model = "gemini-2.0-flash"
 gemini_timeout_ms = 12000
 fallback_to_local = false
 
+[tts]
+provider = "elevenlabs"
+elevenlabs_api_key_path = "~/custom/elevenlabs-key.txt"
+elevenlabs_model = "eleven_turbo_v2_5"
+
 [ui]
 port = 9000
 auto_open_browser = false
@@ -96,5 +106,8 @@ auto_open_browser = false
     assert config.parser.gemini_model == "gemini-2.0-flash"
     assert config.parser.gemini_timeout_ms == 12000
     assert config.parser.fallback_to_local is False
+    assert config.tts.provider == "elevenlabs"
+    assert config.tts.elevenlabs_api_key_path == Path("~/custom/elevenlabs-key.txt").expanduser()
+    assert config.tts.elevenlabs_model == "eleven_turbo_v2_5"
     assert config.ui.port == 9000
     assert config.ui.auto_open_browser is False

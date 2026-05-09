@@ -30,6 +30,23 @@ CHIRP_3_HD_VOICES = [
     "en-GB-Chirp3-HD-Zephyr",
 ]
 
+ELEVENLABS_VOICES = [
+    ("Rachel", "21m00Tcm4TlvDq8ikWAM"),
+    ("Drew", "29vD33N1CtxCmqQRPOHJ"),
+    ("Clyde", "2EiwWnXFnvU5JabPnvG"),
+    ("Paul", "5Q0t7uMcjvnagumLfvZi"),
+    ("Domi", "AZnzlk1XvdvUeBnXmlld"),
+    ("Dave", "CYw3kZ02Hs0563khs1Fj"),
+    ("Fin", "D38z5RcWu1voky8WS1ja"),
+    ("Sarah", "EXAVITQu4vr4xnSDxMaL"),
+    ("Antoni", "ErXwobaYiN019PkySvjV"),
+    ("Thomas", "GBv7mTt0atIp3Br8iCZE"),
+    ("Charlie", "IKne3meq5aSn9XLyUdCD"),
+    ("George", "JBFqnCBsd6RMkjVDRZzb"),
+]
+
+TTS_PROVIDERS = ["google", "elevenlabs"]
+
 DEFAULT_PREVIEW_TEXT = "Hello, this is a test."
 
 
@@ -70,6 +87,8 @@ def validate_hardcoded_voices(reported_voice_names: Iterable[str]) -> list[str]:
 
 
 class TTSClient:
+    provider = "google"
+
     def __init__(
         self,
         synthesizer: Synthesizer | None = None,
@@ -201,6 +220,132 @@ class TTSClient:
         from google.cloud import texttospeech
 
         return texttospeech.TextToSpeechClient()
+
+
+class ElevenLabsTTSClient:
+    provider = "elevenlabs"
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model_id: str = "eleven_multilingual_v2",
+        client: object | None = None,
+        executor: ThreadPoolExecutor | None = None,
+        speaking_rate: float = 1.0,
+    ) -> None:
+        self.api_key = api_key
+        self.model_id = model_id
+        self.client = client
+        self._executor = executor or ThreadPoolExecutor(max_workers=2)
+        self.speaking_rate = speaking_rate
+        self._cache: dict[tuple[str, str, float, str], bytes] = {}
+
+    @classmethod
+    def from_api_key_file(
+        cls,
+        api_key_path: str | Path,
+        *,
+        model_id: str = "eleven_multilingual_v2",
+    ) -> "ElevenLabsTTSClient":
+        path = Path(api_key_path).expanduser()
+        if not path.exists():
+            raise TTSAuthenticationError(f"ElevenLabs API key file not found at {path}.")
+        api_key = path.read_text(encoding="utf-8").strip()
+        if not api_key:
+            raise TTSAuthenticationError(f"ElevenLabs API key file at {path} is empty.")
+        return cls(api_key=api_key, model_id=model_id)
+
+    @property
+    def cache(self) -> dict[tuple[str, str, float, str], bytes]:
+        return self._cache
+
+    def synthesize(
+        self,
+        text: str,
+        voice_id: str,
+        speaking_rate: float | None = None,
+    ) -> bytes:
+        rate = _normalize_speaking_rate(
+            self.speaking_rate if speaking_rate is None else speaking_rate
+        )
+        key = (text, voice_id, rate, self.model_id)
+        if key in self._cache:
+            return self._cache[key]
+
+        try:
+            audio = self._elevenlabs_synthesize(text, voice_id)
+        except Exception as exc:  # noqa: BLE001
+            if _is_auth_error(exc):
+                raise TTSAuthenticationError(
+                    "ElevenLabs credentials are missing or unauthorized. "
+                    "Check ~/.config/audition-app/elevenlabs-api-key.txt."
+                ) from exc
+            raise TtsSynthesisError(
+                "Unable to synthesize this line. "
+                f"ElevenLabs reported: {exc}"
+            ) from exc
+
+        self._cache[key] = audio
+        return audio
+
+    def prefetch(
+        self,
+        item: PracticeQueueItem,
+        speaking_rate: float | None = None,
+    ) -> Future[bytes] | None:
+        if item.role != "ai" or item.voice_id is None:
+            return None
+        return self._executor.submit(
+            self.synthesize,
+            item.text,
+            item.voice_id,
+            speaking_rate,
+        )
+
+    def prefetch_next_ai(
+        self,
+        queue: list[PracticeQueueItem],
+        current_index: int,
+        speaking_rate: float | None = None,
+    ) -> Future[bytes] | None:
+        for item in queue[current_index + 1 :]:
+            if item.role == "ai":
+                return self.prefetch(item, speaking_rate=speaking_rate)
+        return None
+
+    def preview(self, voice_id: str, sample_text: str = DEFAULT_PREVIEW_TEXT) -> bytes:
+        return self.synthesize(sample_text, voice_id)
+
+    def _elevenlabs_synthesize(self, text: str, voice_id: str) -> bytes:
+        client = self._elevenlabs_client()
+        audio = client.text_to_speech.convert(
+            text=text,
+            voice_id=voice_id,
+            model_id=self.model_id,
+            output_format="mp3_44100_128",
+        )
+        if isinstance(audio, bytes):
+            return audio
+        return b"".join(audio)
+
+    def _elevenlabs_client(self):
+        if self.client is not None:
+            return self.client
+        from elevenlabs import ElevenLabs
+
+        self.client = ElevenLabs(api_key=self.api_key)
+        return self.client
+
+
+def create_tts_client(config, provider: str | None = None):
+    selected_provider = (provider or config.tts.provider).lower()
+    if selected_provider == "elevenlabs":
+        return ElevenLabsTTSClient.from_api_key_file(
+            config.tts.elevenlabs_api_key_path,
+            model_id=config.tts.elevenlabs_model,
+        )
+    return TTSClient(credentials_path=config.gcp.credentials_path)
 
 
 def _is_auth_error(exc: Exception) -> bool:

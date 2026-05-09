@@ -31,7 +31,13 @@ from parser import (
     validate_parse_quality,
 )
 from practice import PracticeSession, SessionState, build_practice_queue
-from tts import CHIRP_3_HD_VOICES, TTSClient, default_voice_assignment
+from tts import (
+    CHIRP_3_HD_VOICES,
+    ELEVENLABS_VOICES,
+    TTSClient,
+    create_tts_client,
+    default_voice_assignment,
+)
 from vad import VADEvent, detect_turn_events
 
 
@@ -955,6 +961,8 @@ class PracticeUiState:
     queue_scene_index: int = 0
     pending_audio: list[bytes] = field(default_factory=list)
     dialogue_pacing: float = 1.0
+    tts_provider: str = "google"
+    tts_client_provider: str | None = None
     vad_thread: threading.Thread | None = None
     vad_stop: threading.Event = field(default_factory=threading.Event)
     vad_active: bool = False
@@ -1432,16 +1440,16 @@ def update_default_voices(state: PracticeUiState, user_character: str):
         return (
             state,
             gr.update(choices=[], value=None),
-            gr.update(value=None),
+            gr.update(choices=_voice_choices_for_provider(state.tts_provider), value=None),
+            gr.update(choices=_voice_choices_for_provider(state.tts_provider), value=None),
             _voice_assignment_status(state, user_character),
         )
-    defaults = default_voice_assignment(
-        sorted(state.script.characters),
-        user_character,
-    )
+    voice_values = _voice_values_for_provider(state.tts_provider)
+    defaults = default_voice_assignment(sorted(state.script.characters), user_character, voice_values)
     new_overrides: dict[str, str] = {}
     for character, default_voice in defaults.voice_for_character.items():
-        new_overrides[character] = state.voice_overrides.get(character) or default_voice
+        existing_voice = state.voice_overrides.get(character)
+        new_overrides[character] = existing_voice if existing_voice in voice_values else default_voice
     state.voice_overrides = new_overrides
     choices = sorted(new_overrides)
     selected_character = choices[0] if choices else None
@@ -1449,9 +1457,27 @@ def update_default_voices(state: PracticeUiState, user_character: str):
     return (
         state,
         gr.update(choices=choices, value=selected_character),
-        gr.update(value=selected_voice),
+        gr.update(choices=_voice_choices_for_provider(state.tts_provider), value=selected_voice),
+        gr.update(
+            choices=_voice_choices_for_provider(state.tts_provider),
+            value=selected_voice or _voice_values_for_provider(state.tts_provider)[0],
+        ),
         _voice_assignment_status(state, user_character),
     )
+
+
+def update_tts_provider(state: PracticeUiState, provider_label: str, user_character: str):
+    state = _ensure_state(state)
+    state.tts_provider = _provider_from_label(provider_label)
+    state.tts_client = None
+    state.tts_client_provider = None
+    state.voice_overrides = {}
+    row_result = update_cast_voice_rows(state, user_character)
+    preview_update = gr.update(
+        choices=_voice_choices_for_provider(state.tts_provider),
+        value=_voice_values_for_provider(state.tts_provider)[0],
+    )
+    return (*row_result[:-1], preview_update, row_result[-1])
 
 
 def set_voice_override(state: PracticeUiState, character: str, voice_id: str) -> PracticeUiState:
@@ -1484,15 +1510,27 @@ def update_cast_voice_rows(state: PracticeUiState, user_character: str):
     state = _ensure_state(state)
     if state.script is None or not user_character:
         state.voice_overrides = {}
-        return (state, *_empty_cast_row_updates(), _voice_assignment_status(state, user_character))
+        preview_update = gr.update(
+            choices=_voice_choices_for_provider(state.tts_provider),
+            value=None,
+        )
+        return (
+            state,
+            *_empty_cast_row_updates(),
+            preview_update,
+            _voice_assignment_status(state, user_character),
+        )
 
-    defaults = default_voice_assignment(sorted(state.script.characters), user_character)
+    voice_values = _voice_values_for_provider(state.tts_provider)
+    defaults = default_voice_assignment(sorted(state.script.characters), user_character, voice_values)
     new_overrides: dict[str, str] = {}
     for character, default_voice in defaults.voice_for_character.items():
-        new_overrides[character] = state.voice_overrides.get(character) or default_voice
+        existing_voice = state.voice_overrides.get(character)
+        new_overrides[character] = existing_voice if existing_voice in voice_values else default_voice
     state.voice_overrides = new_overrides
 
     row_updates: list[Any] = []
+    voice_choices = _voice_choices_for_provider(state.tts_provider)
     characters = sorted(new_overrides)
     for index in range(MAX_CAST_ROWS):
         if index < len(characters):
@@ -1502,13 +1540,17 @@ def update_cast_voice_rows(state: PracticeUiState, user_character: str):
                 [
                     gr.update(visible=True),
                     _voice_row_label(character),
-                    gr.update(value=voice_id),
+                    gr.update(choices=voice_choices, value=voice_id),
                     character,
                 ]
             )
         else:
-            row_updates.extend([gr.update(visible=False), "", gr.update(value=None), ""])
-    return (state, *row_updates, _voice_assignment_status(state, user_character))
+            row_updates.extend([gr.update(visible=False), "", gr.update(choices=voice_choices, value=None), ""])
+    preview_update = gr.update(
+        choices=voice_choices,
+        value=(new_overrides[characters[0]] if characters else _voice_values_for_provider(state.tts_provider)[0]),
+    )
+    return (state, *row_updates, preview_update, _voice_assignment_status(state, user_character))
 
 
 def _empty_cast_row_updates() -> list[Any]:
@@ -1550,6 +1592,27 @@ def _voice_assignment_status(
         for character, voice_id in sorted(state.voice_overrides.items())
     )
     return f'<div class="assignment-list">{rows}</div>'
+
+
+def _voice_choices_for_provider(provider: str):
+    if provider == "elevenlabs":
+        return list(ELEVENLABS_VOICES)
+    return list(CHIRP_3_HD_VOICES)
+
+
+def _voice_values_for_provider(provider: str) -> list[str]:
+    choices = _voice_choices_for_provider(provider)
+    return [choice[1] if isinstance(choice, tuple) else choice for choice in choices]
+
+
+def _provider_from_label(provider_label: str | None) -> str:
+    if provider_label and "ElevenLabs" in provider_label:
+        return "elevenlabs"
+    return "google"
+
+
+def _provider_label(provider: str) -> str:
+    return "ElevenLabs" if provider == "elevenlabs" else "Google Chirp"
 
 
 def preview_voice(state: PracticeUiState, voice_id: str):
@@ -1744,9 +1807,10 @@ def restart_practice(state: PracticeUiState):
     return _practice_outputs(state)
 
 
-def _tts_client(state: PracticeUiState) -> TTSClient:
-    if state.tts_client is None:
-        state.tts_client = TTSClient(credentials_path=state.config.gcp.credentials_path)
+def _tts_client(state: PracticeUiState):
+    if state.tts_client is None or state.tts_client_provider != state.tts_provider:
+        state.tts_client = create_tts_client(state.config, provider=state.tts_provider)
+        state.tts_client_provider = state.tts_provider
     return state.tts_client
 
 
@@ -2125,6 +2189,11 @@ def build_app():
                 )
                 with gr.Row(equal_height=False):
                     with gr.Column(scale=4):
+                        tts_provider_choice = gr.Radio(
+                            label="Voice provider",
+                            choices=["Google Chirp", "ElevenLabs"],
+                            value="Google Chirp",
+                        )
                         user_character = gr.Radio(
                             label="You are playing",
                         )
@@ -2138,7 +2207,7 @@ def build_app():
                             with gr.Row(visible=False, elem_classes="voice-row") as voice_row:
                                 character_label = gr.HTML()
                                 voice_dropdown = gr.Dropdown(
-                                    choices=CHIRP_3_HD_VOICES,
+                                    choices=_voice_choices_for_provider("google"),
                                     label=" ",
                                     show_label=False,
                                 )
@@ -2152,9 +2221,9 @@ def build_app():
                     with gr.Column(scale=3):
                         with gr.Accordion("Voice preview", open=True):
                             preview_voice_id = gr.Dropdown(
-                                choices=CHIRP_3_HD_VOICES,
+                                choices=_voice_choices_for_provider("google"),
                                 label="Preview a voice",
-                                value=CHIRP_3_HD_VOICES[0],
+                                value=_voice_values_for_provider("google")[0],
                             )
                             preview_button = gr.Button(
                                 "Play preview",
@@ -2311,7 +2380,18 @@ def build_app():
         user_character.change(
             update_cast_voice_rows,
             inputs=[state, user_character],
-            outputs=[state, *cast_voice_row_outputs, voice_assignment_status],
+            outputs=[state, *cast_voice_row_outputs, preview_voice_id, voice_assignment_status],
+            queue=False,
+        )
+        tts_provider_choice.change(
+            update_tts_provider,
+            inputs=[state, tts_provider_choice, user_character],
+            outputs=[
+                state,
+                *cast_voice_row_outputs,
+                preview_voice_id,
+                voice_assignment_status,
+            ],
             queue=False,
         )
         for _row_group, _character_label, row_voice_dropdown, row_character_holder in cast_voice_rows:
